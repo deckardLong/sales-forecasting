@@ -222,3 +222,5 @@ data/raw/
 *.csv
 data/processed/
 *.parquet
+data/merged/
+*.parquet

@@ -17,12 +17,24 @@ def clean_sales(sales_df: pd.DataFrame):
 
 def clean_cal(cal_df: pd.DataFrame):
     cal_df['date'] = pd.to_datetime(cal_df['date'])
-    cal_df['event_name_1'] = cal_df['event_name_1'].fillna('None')
-    cal_df['event_type_1'] = cal_df['event_type_1'].fillna('None')
-    cal_df['event_name_2'] = cal_df['event_name_2'].fillna('None')
-    cal_df['event_type_2'] = cal_df['event_type_2'].fillna('None')
+    cal_df['event_name_1'] = cal_df['event_name_1'].fillna('No_Event')
+    cal_df['event_type_1'] = cal_df['event_type_1'].fillna('No_Event')
+    cal_df['event_name_2'] = cal_df['event_name_2'].fillna('No_Event')
+    cal_df['event_type_2'] = cal_df['event_type_2'].fillna('No_Event')
 
     return cal_df
+
+def clean_sell_prices(df: pd.DataFrame):
+    df['sell_price'] = df.groupby('item_id')['sell_price'].ffill()
+    df['sell_price'] = df.groupby('item_id')['sell_price'].bfill()
+
+    return df
+
+def merge_files(cleaned_sales_df: pd.DataFrame, cleaned_cal_df: pd.DataFrame, cleaned_prices_df: pd.DataFrame):
+    df = cleaned_sales_df.merge(cleaned_cal_df, on='d', how='left')
+    df = df.merge(cleaned_prices_df, on=['item_id', 'wm_yr_wk', 'store_id'], how='left')
+    
+    return df
 
 def save_cleaned_data(sales_df: pd.DataFrame, cal_df: pd.DataFrame, prices_df: pd.DataFrame):
     sales_df.to_parquet('../data/processed/cleaned_sales.parquet', index=False)
