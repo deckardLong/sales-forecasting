@@ -224,3 +224,7 @@ data/processed/
 *.parquet
 data/merged/
 *.parquet
+
+# Models
+models/items/
+*.pkl
