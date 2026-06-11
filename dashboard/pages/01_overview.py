@@ -1,0 +1,626 @@
+import os
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+from sklearn.metrics import mean_absolute_error
+
+# Page config
+st.set_page_config(
+    page_title="Sales Forecasting — Overview",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Theme & CSS
+st.markdown("""
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+ 
+    /* Base */
+    html, body, [class*="css"] {
+        font-family: 'Inter', sans-serif;
+    }
+ 
+    /* Hide default streamlit header */
+    #MainMenu, footer, header { visibility: hidden; }
+ 
+    /* Main background */
+    .stApp {
+        background-color: #0f1117;
+        color: #e2e8f0;
+    }
+ 
+    /* Sidebar */
+    [data-testid="stSidebar"] {
+        background-color: #161b27;
+        border-right: 1px solid #1e2535;
+    }
+    [data-testid="stSidebar"] * { color: #94a3b8 !important; }
+    [data-testid="stSidebar"] .stSelectbox label,
+    [data-testid="stSidebar"] .stMultiSelect label { color: #64748b !important; font-size: 11px !important; text-transform: uppercase; letter-spacing: 0.08em; }
+ 
+    /* Metric cards */
+    .metric-card {
+        background: linear-gradient(135deg, #161b27 0%, #1a2035 100%);
+        border: 1px solid #1e2d45;
+        border-radius: 12px;
+        padding: 20px 24px;
+        position: relative;
+        overflow: hidden;
+    }
+    .metric-card::before {
+        content: '';
+        position: absolute;
+        top: 0; left: 0; right: 0;
+        height: 2px;
+        background: linear-gradient(90deg, #3b82f6, #8b5cf6);
+    }
+    .metric-label {
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: #475569;
+        margin-bottom: 8px;
+    }
+    .metric-value {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 28px;
+        font-weight: 700;
+        color: #f1f5f9;
+        line-height: 1;
+    }
+    .metric-delta {
+        font-size: 12px;
+        margin-top: 6px;
+        color: #64748b;
+    }
+    .metric-delta.good { color: #34d399; }
+    .metric-delta.bad  { color: #f87171; }
+ 
+    /* Section headers */
+    .section-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 32px 0 16px 0;
+        padding-bottom: 10px;
+        border-bottom: 1px solid #1e2535;
+    }
+    .section-title {
+        font-size: 13px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        color: #475569;
+    }
+    .section-dot {
+        width: 6px; height: 6px;
+        background: #3b82f6;
+        border-radius: 50%;
+    }
+ 
+    /* Page title */
+    .page-title {
+        font-size: 32px;
+        font-weight: 700;
+        color: #f1f5f9;
+        letter-spacing: -0.02em;
+        line-height: 1.2;
+    }
+    .page-subtitle {
+        font-size: 14px;
+        color: #475569;
+        margin-top: 6px;
+    }
+ 
+    /* Top badge */
+    .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background: rgba(59, 130, 246, 0.1);
+        border: 1px solid rgba(59, 130, 246, 0.2);
+        border-radius: 20px;
+        padding: 4px 12px;
+        font-size: 11px;
+        font-weight: 500;
+        color: #60a5fa;
+        margin-bottom: 12px;
+    }
+ 
+    /* Data table */
+    .dataframe { font-size: 12px !important; }
+ 
+    /* Plotly chart background */
+    .js-plotly-plot { border-radius: 12px; overflow: hidden; }
+ 
+    /* Selectbox */
+    .stSelectbox > div > div {
+        background-color: #161b27;
+        border-color: #1e2535;
+        color: #e2e8f0;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Data Loading
+@st.cache_data
+def load_data():
+ 
+    df_forecast = pd.read_parquet('models/forecast/forecast_results.parquet')
+    df_eval     = pd.read_csv('data/raw/sales_train_evaluation.csv')
+    calendar    = pd.read_csv('data/raw/calendar.csv')
+    df_features = pd.read_parquet('data/features/m5_features.parquet')
+ 
+    df_forecast['ds'] = pd.to_datetime(df_forecast['ds'])
+    df_forecast['yhat'] = df_forecast['yhat'].clip(lower=0)
+ 
+    calendar['date'] = pd.to_datetime(calendar['date'])
+    return df_forecast, df_eval, calendar, df_features
+ 
+ 
+@st.cache_data
+def compute_actuals(df_eval, calendar):
+    id_cols  = ['item_id', 'store_id']
+    day_cols = [c for c in df_eval.columns if c.startswith('d_')]
+    last_28  = day_cols[-28:]
+ 
+    df_actual = df_eval.melt(
+        id_vars=id_cols,
+        value_vars=last_28,
+        var_name='d',
+        value_name='actual'
+    ).merge(calendar[['d', 'date']], on='d', how='left')
+    df_actual['date'] = pd.to_datetime(df_actual['date'])
+    return df_actual
+ 
+ 
+@st.cache_data
+def compute_compare(df_forecast, df_actual):
+    df_pred_daily   = df_forecast.groupby('ds')['yhat'].sum().reset_index()
+    df_actual_daily = df_actual.groupby('date')['actual'].sum().reset_index()
+ 
+    return df_actual_daily.merge(
+        df_pred_daily,
+        left_on='date', right_on='ds',
+        how='inner'
+    )
+ 
+ 
+@st.cache_data
+def compute_item_metrics(df_forecast, df_actual):
+    df_item_pred = df_forecast.groupby(['item_id', 'store_id', 'ds'])['yhat'].sum().reset_index()
+    df_item_act  = df_actual.groupby(['item_id', 'store_id', 'date'])['actual'].sum().reset_index()
+ 
+    df_item = df_item_act.merge(
+        df_item_pred,
+        left_on=['item_id', 'store_id', 'date'],
+        right_on=['item_id', 'store_id', 'ds'],
+        how='inner'
+    )
+ 
+    metrics = df_item.groupby(['item_id', 'store_id']).apply(
+        lambda g: pd.Series({
+            'MAE' : mean_absolute_error(g['actual'], g['yhat']),
+            'RMSE': np.sqrt(((g['actual'] - g['yhat']) ** 2).mean()),
+            'MAPE': (abs(g['actual'] - g['yhat']) / (g['actual'] + 1)).mean() * 100,
+            'total_actual'   : g['actual'].sum(),
+            'total_predicted': g['yhat'].sum(),
+        })
+    ).reset_index()
+ 
+    return metrics
+ 
+# Plotting Helpers
+PLOTLY_LAYOUT = dict(
+    paper_bgcolor='rgba(0,0,0,0)',
+    plot_bgcolor='rgba(0,0,0,0)',
+    font=dict(family='Inter', color='#94a3b8', size=12),
+    xaxis=dict(gridcolor='#1e2535', linecolor='#1e2535', tickcolor='#475569'),
+    yaxis=dict(gridcolor='#1e2535', linecolor='#1e2535', tickcolor='#475569'),
+    margin=dict(l=16, r=16, t=40, b=16),
+    legend=dict(bgcolor='rgba(0,0,0,0)', bordercolor='#1e2535', borderwidth=1),
+    hoverlabel=dict(bgcolor='#161b27', bordercolor='#1e2535', font_color='#e2e8f0'),
+)
+ 
+ 
+def plot_actual_vs_predicted(df_compare):
+    fig = go.Figure()
+ 
+    fig.add_trace(go.Scatter(
+        x=df_compare['date'], y=df_compare['actual'],
+        name='Actual', mode='lines+markers',
+        line=dict(color='#60a5fa', width=2),
+        marker=dict(size=5, color='#60a5fa'),
+        hovertemplate='<b>Actual</b><br>%{x|%b %d}<br>%{y:,.0f}<extra></extra>'
+    ))
+ 
+    fig.add_trace(go.Scatter(
+        x=df_compare['date'], y=df_compare['yhat'],
+        name='Predicted', mode='lines+markers',
+        line=dict(color='#f472b6', width=2, dash='dot'),
+        marker=dict(size=5, color='#f472b6'),
+        hovertemplate='<b>Predicted</b><br>%{x|%b %d}<br>%{y:,.0f}<extra></extra>'
+    ))
+ 
+    fig.update_layout(
+        **PLOTLY_LAYOUT,
+        title=dict(text='Total Daily Sales — Actual vs Predicted (28 Days)', font=dict(size=14, color='#e2e8f0')),
+        xaxis_title='Date',
+        yaxis_title='Units Sold',
+        hovermode='x unified',
+        height=360
+    )
+    return fig
+ 
+ 
+def plot_historical_trend(df_features):
+    df_daily = df_features.groupby('date')['sales'].sum().reset_index()
+    df_daily['ma_7']  = df_daily['sales'].rolling(7).mean()
+    df_daily['ma_30'] = df_daily['sales'].rolling(30).mean()
+ 
+    fig = go.Figure()
+ 
+    fig.add_trace(go.Scatter(
+        x=df_daily['date'], y=df_daily['sales'],
+        name='Daily Sales', mode='lines',
+        line=dict(color='#3b82f6', width=1),
+        opacity=0.4,
+        hovertemplate='%{x|%b %d, %Y}<br>%{y:,.0f}<extra></extra>'
+    ))
+ 
+    fig.add_trace(go.Scatter(
+        x=df_daily['date'], y=df_daily['ma_7'],
+        name='7-day MA', mode='lines',
+        line=dict(color='#60a5fa', width=2),
+        hovertemplate='7-day MA<br>%{y:,.0f}<extra></extra>'
+    ))
+ 
+    fig.add_trace(go.Scatter(
+        x=df_daily['date'], y=df_daily['ma_30'],
+        name='30-day MA', mode='lines',
+        line=dict(color='#f472b6', width=2),
+        hovertemplate='30-day MA<br>%{y:,.0f}<extra></extra>'
+    ))
+ 
+    fig.update_layout(
+        **PLOTLY_LAYOUT,
+        title=dict(text='Historical Sales Trend (Full Dataset)', font=dict(size=14, color='#e2e8f0')),
+        xaxis_title='Date',
+        yaxis_title='Units Sold',
+        height=320
+    )
+    return fig
+ 
+ 
+def plot_store_comparison(df_actual):
+    df_store = df_actual.groupby('store_id')['actual'].sum().reset_index()\
+                        .sort_values('actual', ascending=True)
+ 
+    colors = ['#3b82f6', '#8b5cf6', '#06b6d4', '#f472b6',
+              '#34d399', '#fbbf24', '#f87171', '#a78bfa',
+              '#38bdf8', '#4ade80']
+ 
+    fig = go.Figure(go.Bar(
+        x=df_store['actual'],
+        y=df_store['store_id'],
+        orientation='h',
+        marker=dict(color=colors[:len(df_store)], opacity=0.85),
+        hovertemplate='<b>%{y}</b><br>%{x:,.0f} units<extra></extra>'
+    ))
+ 
+    fig.update_layout(
+        **PLOTLY_LAYOUT,
+        title=dict(text='Total Actual Sales by Store (28 Days)', font=dict(size=14, color='#e2e8f0')),
+        xaxis_title='Units Sold',
+        height=320
+    )
+    return fig
+ 
+ 
+def plot_category_breakdown(df_actual, df_eval):
+    df_cat = df_eval[['item_id', 'cat_id']].drop_duplicates()
+    df_merged = df_actual.merge(df_cat, on='item_id', how='left')
+    df_cat_sum = df_merged.groupby('cat_id')['actual'].sum().reset_index()
+ 
+    fig = go.Figure(go.Pie(
+        labels=df_cat_sum['cat_id'],
+        values=df_cat_sum['actual'],
+        hole=0.6,
+        marker=dict(colors=['#3b82f6', '#8b5cf6', '#f472b6']),
+        textinfo='label+percent',
+        textfont=dict(color='#e2e8f0', size=12),
+        hovertemplate='<b>%{label}</b><br>%{value:,.0f} units<br>%{percent}<extra></extra>'
+    ))
+ 
+    fig.update_layout(
+        **PLOTLY_LAYOUT,
+        title=dict(text='Sales by Category', font=dict(size=14, color='#e2e8f0')),
+        showlegend=False,
+        height=320
+    )
+    return fig
+ 
+ 
+def plot_error_distribution(item_metrics):
+    fig = go.Figure(go.Histogram(
+        x=item_metrics['MAPE'].clip(upper=50),
+        nbinsx=40,
+        marker=dict(color='#3b82f6', opacity=0.8, line=dict(color='#1e2535', width=0.5)),
+        hovertemplate='MAPE: %{x:.1f}%<br>Count: %{y}<extra></extra>'
+    ))
+ 
+    fig.update_layout(
+        **PLOTLY_LAYOUT,
+        title=dict(text='MAPE Distribution Across All Items', font=dict(size=14, color='#e2e8f0')),
+        xaxis_title='MAPE (%)',
+        yaxis_title='Number of Items',
+        height=280
+    )
+    return fig
+ 
+# Side Bar
+with st.sidebar:
+    st.markdown("""
+    <div style='padding: 16px 0 24px 0;'>
+        <div style='font-size:18px; font-weight:700; color:#f1f5f9; letter-spacing:-0.02em;'>
+            📈 M5 Forecasting
+        </div>
+        <div style='font-size:11px; color:#475569; margin-top:4px;'>
+            Walmart Sales · Prophet Model
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+ 
+    st.markdown("---")
+    st.markdown("<div style='font-size:10px; color:#475569; text-transform:uppercase; letter-spacing:0.1em; margin-bottom:8px;'>Navigation</div>", unsafe_allow_html=True)
+ 
+    pages = {
+        "📊 Overview"         : "Current page",
+        "🔍 Item Detail"      : "pages/02_item_detail.py",
+        "🏪 Store Comparison" : "pages/03_store_comparison.py",
+    }
+    for page, _ in pages.items():
+        is_active = page == "📊 Overview"
+        bg = "rgba(59,130,246,0.1)" if is_active else "transparent"
+        border = "rgba(59,130,246,0.4)" if is_active else "transparent"
+        color = "#60a5fa" if is_active else "#64748b"
+        st.markdown(f"""
+        <div style='padding:8px 12px; border-radius:8px; background:{bg};
+                    border:1px solid {border}; margin-bottom:4px; cursor:pointer;
+                    font-size:13px; color:{color}; font-weight:{"500" if is_active else "400"};'>
+            {page}
+        </div>
+        """, unsafe_allow_html=True)
+ 
+    st.markdown("---")
+    st.markdown("<div style='font-size:10px; color:#475569; text-transform:uppercase; letter-spacing:0.1em; margin-bottom:8px;'>Filters</div>", unsafe_allow_html=True)
+ 
+    selected_stores = st.multiselect(
+        "STORES",
+        options=['CA_1','CA_2','CA_3','CA_4','TX_1','TX_2','TX_3','WI_1','WI_2','WI_3'],
+        default=['CA_1','CA_2','CA_3','CA_4','TX_1','TX_2','TX_3','WI_1','WI_2','WI_3'],
+        help="Filter by store"
+    )
+ 
+    selected_cats = st.multiselect(
+        "CATEGORIES",
+        options=['HOBBIES', 'FOODS', 'HOUSEHOLD'],
+        default=['HOBBIES', 'FOODS', 'HOUSEHOLD'],
+        help="Filter by category"
+    )
+ 
+    st.markdown("---")
+    st.markdown(f"""
+    <div style='font-size:11px; color:#334155; text-align:center; padding: 8px 0;'>
+        Prophet · 28-day Horizon<br>
+        <span style='color:#1e3a5f;'>30,490 models trained</span>
+    </div>
+    """, unsafe_allow_html=True)
+ 
+ # Main Content
+try:
+    df_forecast, df_eval, calendar, df_features = load_data()
+    df_actual    = compute_actuals(df_eval, calendar)
+    df_compare   = compute_compare(df_forecast, df_actual)
+    item_metrics = compute_item_metrics(df_forecast, df_actual)
+ 
+    # Apply filters
+    if selected_stores:
+        df_forecast  = df_forecast[df_forecast['store_id'].isin(selected_stores)]
+        df_actual    = df_actual[df_actual['store_id'].isin(selected_stores)]
+        item_metrics = item_metrics[item_metrics['store_id'].isin(selected_stores)]
+ 
+    if selected_cats:
+        cat_items = df_eval[df_eval['cat_id'].isin(selected_cats)]['item_id'].unique()
+        df_forecast  = df_forecast[df_forecast['item_id'].isin(cat_items)]
+        df_actual    = df_actual[df_actual['item_id'].isin(cat_items)]
+        item_metrics = item_metrics[item_metrics['item_id'].isin(cat_items)]
+ 
+    df_compare = compute_compare(df_forecast, df_actual)
+
+    # Header
+    st.markdown("""
+    <div class='badge'>● LIVE DASHBOARD</div>
+    <div class='page-title'>Sales Forecast Overview</div>
+    <div class='page-subtitle'>M5 Competition · Walmart Retail · 10 Stores · 3,049 Products · Prophet Model</div>
+    """, unsafe_allow_html=True)
+ 
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # KPI Metrics
+    total_actual    = int(df_compare['actual'].sum())
+    total_predicted = int(df_compare['yhat'].sum())
+    overall_mae     = mean_absolute_error(df_compare['actual'], df_compare['yhat'])
+    overall_rmse    = np.sqrt(((df_compare['actual'] - df_compare['yhat']) ** 2).mean())
+    overall_mape    = (abs(df_compare['actual'] - df_compare['yhat']) / (df_compare['actual'] + 1)).mean() * 100
+    pct_diff        = (total_predicted - total_actual) / total_actual * 100
+    n_items         = len(item_metrics)
+    good_items      = (item_metrics['MAPE'] < 20).sum()
+    pct_good        = good_items / n_items * 100
+ 
+    col1, col2, col3, col4, col5 = st.columns(5)
+ 
+    with col1:
+        st.markdown(f"""
+        <div class='metric-card'>
+            <div class='metric-label'>Total Actual Sales</div>
+            <div class='metric-value'>{total_actual:,.0f}</div>
+            <div class='metric-delta'>28-day window</div>
+        </div>
+        """, unsafe_allow_html=True)
+ 
+    with col2:
+        delta_class = "good" if abs(pct_diff) < 5 else "bad"
+        arrow = "↑" if pct_diff > 0 else "↓"
+        st.markdown(f"""
+        <div class='metric-card'>
+            <div class='metric-label'>Total Predicted</div>
+            <div class='metric-value'>{total_predicted:,.0f}</div>
+            <div class='metric-delta {delta_class}'>{arrow} {abs(pct_diff):.1f}% vs actual</div>
+        </div>
+        """, unsafe_allow_html=True)
+ 
+    with col3:
+        mape_class = "good" if overall_mape < 15 else "bad"
+        st.markdown(f"""
+        <div class='metric-card'>
+            <div class='metric-label'>Overall MAPE</div>
+            <div class='metric-value'>{overall_mape:.1f}%</div>
+            <div class='metric-delta {mape_class}'>{'✓ Good' if overall_mape < 15 else '⚠ Needs improvement'}</div>
+        </div>
+        """, unsafe_allow_html=True)
+ 
+    with col4:
+        st.markdown(f"""
+        <div class='metric-card'>
+            <div class='metric-label'>MAE / RMSE</div>
+            <div class='metric-value'>{overall_mae:.1f}</div>
+            <div class='metric-delta'>RMSE: {overall_rmse:.1f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+ 
+    with col5:
+        st.markdown(f"""
+        <div class='metric-card'>
+            <div class='metric-label'>Items MAPE &lt; 20%</div>
+            <div class='metric-value'>{pct_good:.0f}%</div>
+            <div class='metric-delta good'>{good_items:,} / {n_items:,} items</div>
+        </div>
+        """, unsafe_allow_html=True)
+ 
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Actual vs Predicted
+    st.markdown("""
+    <div class='section-header'>
+        <div class='section-dot'></div>
+        <div class='section-title'>Forecast Performance — 28-Day Window</div>
+    </div>
+    """, unsafe_allow_html=True)
+ 
+    st.plotly_chart(plot_actual_vs_predicted(df_compare), width='stretch')
+
+    # Historial Trend
+    st.markdown("""
+    <div class='section-header'>
+        <div class='section-dot'></div>
+        <div class='section-title'>Historical Sales Trend</div>
+    </div>
+    """, unsafe_allow_html=True)
+ 
+    st.plotly_chart(plot_historical_trend(df_features), width='stretch')
+
+    # Store + Category
+    st.markdown("""
+    <div class='section-header'>
+        <div class='section-dot'></div>
+        <div class='section-title'>Sales Breakdown</div>
+    </div>
+    """, unsafe_allow_html=True)
+ 
+    col_left, col_right = st.columns([3, 2])
+    with col_left:
+        st.plotly_chart(plot_store_comparison(df_actual), width='stretch')
+    with col_right:
+        st.plotly_chart(plot_category_breakdown(df_actual, df_eval), width='stretch')
+
+    # Error Distribution
+    st.markdown("""
+    <div class='section-header'>
+        <div class='section-dot'></div>
+        <div class='section-title'>Model Error Analysis</div>
+    </div>
+    """, unsafe_allow_html=True)
+ 
+    col_hist, col_table = st.columns([2, 3])
+ 
+    with col_hist:
+        st.plotly_chart(plot_error_distribution(item_metrics), width='stretch')
+ 
+    with col_table:
+        st.markdown("<div style='font-size:12px; color:#475569; margin-bottom:8px;'>TOP 10 WORST PERFORMING ITEMS</div>", unsafe_allow_html=True)
+        worst = item_metrics.nlargest(10, 'MAPE')[['item_id', 'store_id', 'MAE', 'RMSE', 'MAPE']]\
+                            .round(2).reset_index(drop=True)
+        worst.index += 1
+ 
+        st.dataframe(
+            worst.style
+                .background_gradient(subset=['MAPE'], cmap='RdYlGn_r')
+                .format({'MAE': '{:.2f}', 'RMSE': '{:.2f}', 'MAPE': '{:.1f}%'}),
+            width='stretch',
+            height=280
+        )
+
+    # Top Performing Items
+    st.markdown("""
+    <div class='section-header'>
+        <div class='section-dot'></div>
+        <div class='section-title'>Top Performing Items</div>
+    </div>
+    """, unsafe_allow_html=True)
+ 
+    col_best, col_highest = st.columns(2)
+ 
+    with col_best:
+        st.markdown("<div style='font-size:12px; color:#475569; margin-bottom:8px;'>✓ MOST ACCURATE (LOWEST MAPE)</div>", unsafe_allow_html=True)
+        best = item_metrics.nsmallest(10, 'MAPE')[['item_id', 'store_id', 'MAPE', 'total_actual']]\
+                           .round(2).reset_index(drop=True)
+        best.index += 1
+        st.dataframe(
+            best.style
+                .background_gradient(subset=['MAPE'], cmap='RdYlGn')
+                .format({'MAPE': '{:.1f}%', 'total_actual': '{:,.0f}'}),
+            width='stretch',
+            height=280
+        )
+ 
+    with col_highest:
+        st.markdown("<div style='font-size:12px; color:#475569; margin-bottom:8px;'>📦 HIGHEST VOLUME ITEMS</div>", unsafe_allow_html=True)
+        highest = item_metrics.nlargest(10, 'total_actual')[['item_id', 'store_id', 'total_actual', 'total_predicted', 'MAPE']]\
+                              .round(2).reset_index(drop=True)
+        highest.index += 1
+        st.dataframe(
+            highest.style
+                   .format({'total_actual': '{:,.0f}', 'total_predicted': '{:,.0f}', 'MAPE': '{:.1f}%'}),
+            width='stretch',
+            height=280
+        )
+ 
+except FileNotFoundError as e:
+    st.markdown("""
+    <div style='text-align:center; padding:80px 40px;'>
+        <div style='font-size:48px; margin-bottom:16px;'>📂</div>
+        <div style='font-size:20px; font-weight:600; color:#f1f5f9; margin-bottom:8px;'>No Data Found</div>
+        <div style='font-size:14px; color:#475569;'>
+            Run the training pipeline first to generate forecast results.<br>
+            Expected: <code>models/forecast/forecast_results.parquet</code>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.error(f"Missing file: {e}")

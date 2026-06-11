@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 
 def plot_actual_vs_predicted(df_forecast: pd.DataFrame, df_eval: pd.DataFrame, cal: pd.DataFrame, periods=28):
     d_cols = [c for c in df_eval.columns if c.startswith('d_')]
-    last_28 = d_cols[-28:]
+    last_28 = d_cols[-periods:]
 
     df_actual_long = df_eval.melt(
         id_vars=['item_id', 'store_id'],
