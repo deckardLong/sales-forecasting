@@ -1,4 +1,7 @@
 import os
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -6,6 +9,8 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 from sklearn.metrics import mean_absolute_error
+from components.metrics import compute_actuals, compute_compare, compute_item_metrics
+from components.charts import PLOTLY_LAYOUT
 
 # Page config
 st.set_page_config(
@@ -26,7 +31,7 @@ st.markdown("""
     }
  
     /* Hide default streamlit header */
-    #MainMenu, footer, header { visibility: hidden; }
+    #MainMenu, footer { visibility: hidden; }
  
     /* Main background */
     .stApp {
@@ -162,72 +167,6 @@ def load_data():
  
     calendar['date'] = pd.to_datetime(calendar['date'])
     return df_forecast, df_eval, calendar, df_features
- 
- 
-@st.cache_data
-def compute_actuals(df_eval, calendar):
-    id_cols  = ['item_id', 'store_id']
-    day_cols = [c for c in df_eval.columns if c.startswith('d_')]
-    last_28  = day_cols[-28:]
- 
-    df_actual = df_eval.melt(
-        id_vars=id_cols,
-        value_vars=last_28,
-        var_name='d',
-        value_name='actual'
-    ).merge(calendar[['d', 'date']], on='d', how='left')
-    df_actual['date'] = pd.to_datetime(df_actual['date'])
-    return df_actual
- 
- 
-@st.cache_data
-def compute_compare(df_forecast, df_actual):
-    df_pred_daily   = df_forecast.groupby('ds')['yhat'].sum().reset_index()
-    df_actual_daily = df_actual.groupby('date')['actual'].sum().reset_index()
- 
-    return df_actual_daily.merge(
-        df_pred_daily,
-        left_on='date', right_on='ds',
-        how='inner'
-    )
- 
- 
-@st.cache_data
-def compute_item_metrics(df_forecast, df_actual):
-    df_item_pred = df_forecast.groupby(['item_id', 'store_id', 'ds'])['yhat'].sum().reset_index()
-    df_item_act  = df_actual.groupby(['item_id', 'store_id', 'date'])['actual'].sum().reset_index()
- 
-    df_item = df_item_act.merge(
-        df_item_pred,
-        left_on=['item_id', 'store_id', 'date'],
-        right_on=['item_id', 'store_id', 'ds'],
-        how='inner'
-    )
- 
-    metrics = df_item.groupby(['item_id', 'store_id']).apply(
-        lambda g: pd.Series({
-            'MAE' : mean_absolute_error(g['actual'], g['yhat']),
-            'RMSE': np.sqrt(((g['actual'] - g['yhat']) ** 2).mean()),
-            'MAPE': (abs(g['actual'] - g['yhat']) / (g['actual'] + 1)).mean() * 100,
-            'total_actual'   : g['actual'].sum(),
-            'total_predicted': g['yhat'].sum(),
-        })
-    ).reset_index()
- 
-    return metrics
- 
-# Plotting Helpers
-PLOTLY_LAYOUT = dict(
-    paper_bgcolor='rgba(0,0,0,0)',
-    plot_bgcolor='rgba(0,0,0,0)',
-    font=dict(family='Inter', color='#94a3b8', size=12),
-    xaxis=dict(gridcolor='#1e2535', linecolor='#1e2535', tickcolor='#475569'),
-    yaxis=dict(gridcolor='#1e2535', linecolor='#1e2535', tickcolor='#475569'),
-    margin=dict(l=16, r=16, t=40, b=16),
-    legend=dict(bgcolor='rgba(0,0,0,0)', bordercolor='#1e2535', borderwidth=1),
-    hoverlabel=dict(bgcolor='#161b27', bordercolor='#1e2535', font_color='#e2e8f0'),
-)
- 
  
 def plot_actual_vs_predicted(df_compare):
     fig = go.Figure()

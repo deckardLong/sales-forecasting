@@ -5,6 +5,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from sklearn.metrics import mean_absolute_error
 import os
+from components.metrics import get_item_actual, get_item_history
+from components.charts import PLOTLY_LAYOUT, plot_item_forecast
 
 # Page config 
 st.set_page_config(
@@ -99,20 +101,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-
-# Plotly base layout
-PLOTLY_LAYOUT = dict(
-    paper_bgcolor='rgba(0,0,0,0)',
-    plot_bgcolor='rgba(0,0,0,0)',
-    font=dict(family='Inter', color='#94a3b8', size=12),
-    xaxis=dict(gridcolor='#1e2535', linecolor='#1e2535'),
-    yaxis=dict(gridcolor='#1e2535', linecolor='#1e2535'),
-    margin=dict(l=16, r=16, t=40, b=16),
-    # legend=dict(bgcolor='rgba(0,0,0,0)', bordercolor='#1e2535', borderwidth=1),
-    hoverlabel=dict(bgcolor='#161b27', bordercolor='#1e2535', font_color='#e2e8f0'),
-)
-
-
 # Data loading 
 @st.cache_data
 def load_base_data():
@@ -125,124 +113,6 @@ def load_base_data():
     df_forecast['yhat'] = df_forecast['yhat'].clip(lower=0)
     calendar['date'] = pd.to_datetime(calendar['date'])
     return df_forecast, df_eval, calendar, df_features
-
-
-@st.cache_data
-def get_item_actual(df_eval, calendar, item_id, store_id):
-    """Lấy 28 ngày actual của 1 item từ evaluation file."""
-    id_val   = f"{item_id}_{store_id}_evaluation"
-    day_cols = [c for c in df_eval.columns if c.startswith('d_')]
-    last_28  = day_cols[-28:]
-
-    row = df_eval[df_eval['id'] == id_val]
-    if row.empty:
-        return pd.DataFrame()
-
-    vals  = row[last_28].values.flatten()
-    dates = calendar[calendar['d'].isin(last_28)].sort_values('d')['date'].values
-
-    return pd.DataFrame({'date': pd.to_datetime(dates), 'actual': vals})
-
-
-@st.cache_data
-def get_item_history(df_features, item_id, store_id):
-    """Lấy toàn bộ lịch sử của 1 item."""
-    return df_features[
-        (df_features['item_id']  == item_id) &
-        (df_features['store_id'] == store_id)
-    ][['date', 'sales', 'sell_price', 'snap',
-       'event_name_1', 'event_type_1']]\
-     .sort_values('date').reset_index(drop=True)
-
-
-# Charts 
-def plot_item_forecast(df_history, df_actual, df_pred, item_id, store_id, calendar):
-    df_hist_tail = df_history.tail(180)
-
-    holiday_dates = calendar[
-        (calendar['date'].isin(df_pred['ds'])) &
-        (calendar['event_name_1'].notna()) &
-        (calendar['event_name_1'] != 'No_Event')
-    ][['date', 'event_name_1']].drop_duplicates()
-
-    fig = go.Figure()
-
-    # Vùng confidence interval
-    fig.add_trace(go.Scatter(
-        x=pd.concat([df_pred['ds'], df_pred['ds'][::-1]]),
-        y=pd.concat([df_pred['yhat_upper'], df_pred['yhat_lower'][::-1]]),
-        fill='toself',
-        fillcolor='rgba(244, 114, 182, 0.08)',
-        line=dict(color='rgba(0,0,0,0)'),
-        name='Confidence Interval',
-        hoverinfo='skip'
-    ))
-
-    # Lịch sử
-    fig.add_trace(go.Scatter(
-        x=df_hist_tail['date'], y=df_hist_tail['sales'],
-        name='Historical', mode='lines',
-        line=dict(color='#334155', width=1.5),
-        hovertemplate='<b>Historical</b><br>%{x|%b %d, %Y}<br>%{y:,.0f} units<extra></extra>'
-    ))
-
-    # Actual 28 ngày
-    fig.add_trace(go.Scatter(
-        x=df_actual['date'], y=df_actual['actual'],
-        name='Actual', mode='lines+markers',
-        line=dict(color='#60a5fa', width=2.5),
-        marker=dict(size=6, color='#60a5fa', symbol='circle'),
-        hovertemplate='<b>Actual</b><br>%{x|%b %d}<br>%{y:,.0f} units<extra></extra>'
-    ))
-
-    # Forecast
-    fig.add_trace(go.Scatter(
-        x=df_pred['ds'], y=df_pred['yhat'],
-        name='Forecast', mode='lines+markers',
-        line=dict(color='#f472b6', width=2.5, dash='dot'),
-        marker=dict(size=6, color='#f472b6', symbol='diamond'),
-        hovertemplate='<b>Forecast</b><br>%{x|%b %d}<br>%{y:,.1f} units<extra></extra>'
-    ))
-
-    # Đường phân cách history / forecast
-    split_date = df_actual['date'].min()
-    fig.add_vline(
-        x=split_date, line_dash='dash',
-        line_color='#475569', line_width=1,
-        annotation_text='Forecast Start',
-        annotation_font_color='#475569',
-        annotation_font_size=11
-    )
-
-    # Đánh dấu ngày lễ
-    for _, row in holiday_dates.iterrows():
-        fig.add_vline(
-            x=row['date'], line_dash='dot',
-            line_color='#fbbf24', line_width=1,
-            annotation_text=row['event_name_1'],
-            annotation_font_color='#fbbf24',
-            annotation_font_size=10,
-            annotation_textangle=-45
-        )
-
-    fig.update_layout(
-        **PLOTLY_LAYOUT,
-        title=dict(
-            text=f'{item_id}  ·  {store_id}  —  Sales History + 28-Day Forecast',
-            font=dict(size=14, color='#e2e8f0')
-        ),
-        xaxis_title='Date',
-        yaxis_title='Units Sold',
-        hovermode='x unified',
-        height=400,
-        legend=dict(
-            orientation='h', yanchor='bottom',
-            y=1.02, xanchor='right', x=1,
-            bgcolor='rgba(0,0,0,0)'
-        )
-    )
-    return fig
-
 
 def plot_components(df_history):
     """Trend + Weekly + Monthly seasonality."""

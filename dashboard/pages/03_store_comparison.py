@@ -6,8 +6,10 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 from sklearn.metrics import mean_absolute_error
 import os
+from components.metrics import build_store_metrics, build_daily_by_store
+from components.charts import PLOTLY_LAYOUT, STORE_COLORS, STATE_COLORS
 
-# ── Page config ────────────────────────────────────────────────────────────────
+# Page config
 st.set_page_config(
     page_title="Sales Forecasting — Store Comparison",
     page_icon="🏪",
@@ -15,7 +17,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ── CSS ────────────────────────────────────────────────────────────────────────
+# CSS
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -110,28 +112,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── Colors per store ───────────────────────────────────────────────────────────
-STORE_COLORS = {
-    'CA_1': '#3b82f6', 'CA_2': '#60a5fa', 'CA_3': '#93c5fd', 'CA_4': '#bfdbfe',
-    'TX_1': '#8b5cf6', 'TX_2': '#a78bfa', 'TX_3': '#c4b5fd',
-    'WI_1': '#06b6d4', 'WI_2': '#22d3ee', 'WI_3': '#67e8f9',
-}
-
-STATE_COLORS = {'CA': '#3b82f6', 'TX': '#8b5cf6', 'WI': '#06b6d4'}
-
-PLOTLY_LAYOUT = dict(
-    paper_bgcolor='rgba(0,0,0,0)',
-    plot_bgcolor='rgba(0,0,0,0)',
-    font=dict(family='Inter', color='#94a3b8', size=12),
-    xaxis=dict(gridcolor='#1e2535', linecolor='#1e2535'),
-    yaxis=dict(gridcolor='#1e2535', linecolor='#1e2535'),
-    margin=dict(l=16, r=16, t=40, b=16),
-    legend=dict(bgcolor='rgba(0,0,0,0)', bordercolor='#1e2535', borderwidth=1),
-    hoverlabel=dict(bgcolor='#161b27', bordercolor='#1e2535', font_color='#e2e8f0'),
-)
-
-
-# ── Data loading ───────────────────────────────────────────────────────────────
+# Data loading 
 @st.cache_data
 def load_base_data():
     df_forecast = pd.read_parquet('models/forecast/forecast_results.parquet')
@@ -143,46 +124,6 @@ def load_base_data():
     df_forecast['yhat'] = df_forecast['yhat'].clip(lower=0)
     calendar['date'] = pd.to_datetime(calendar['date'])
     return df_forecast, df_eval, calendar, df_features
-
-
-@st.cache_data
-def build_store_metrics(df_forecast, df_eval, calendar):
-    """Tính metrics cho từng store."""
-    id_cols  = ['item_id', 'store_id']
-    day_cols = [c for c in df_eval.columns if c.startswith('d_')]
-    last_28  = day_cols[-28:]
-
-    df_actual = df_eval.melt(
-        id_vars=id_cols, value_vars=last_28,
-        var_name='d', value_name='actual'
-    ).merge(calendar[['d', 'date']], on='d', how='left')
-    df_actual['date'] = pd.to_datetime(df_actual['date'])
-
-    df_pred = df_forecast.rename(columns={'ds': 'date'})
-    df_merge = df_actual.merge(df_pred, on=['item_id', 'store_id', 'date'], how='inner')
-
-    metrics = df_merge.groupby('store_id').apply(lambda g: pd.Series({
-        'total_actual'    : g['actual'].sum(),
-        'total_predicted' : g['yhat'].sum(),
-        'MAE'  : mean_absolute_error(g['actual'], g['yhat']),
-        'RMSE' : np.sqrt(((g['actual'] - g['yhat']) ** 2).mean()),
-        'MAPE' : (abs(g['actual'] - g['yhat']) / (g['actual'] + 1)).mean() * 100,
-        'bias' : (g['yhat'] - g['actual']).mean(),
-        'n_items': g['item_id'].nunique(),
-    })).reset_index()
-
-    metrics['state']      = metrics['store_id'].str[:2]
-    metrics['pct_diff']   = (metrics['total_predicted'] - metrics['total_actual']) / metrics['total_actual'] * 100
-    return metrics, df_merge, df_actual
-
-
-@st.cache_data
-def build_daily_by_store(df_merge):
-    return df_merge.groupby(['store_id', 'date']).agg(
-        actual=('actual', 'sum'),
-        predicted=('yhat', 'sum')
-    ).reset_index()
-
 
 @st.cache_data
 def build_cat_by_store(df_merge, df_eval):
@@ -199,7 +140,7 @@ def build_history_by_store(df_features):
     return df_features.groupby(['store_id', 'date'])['sales'].sum().reset_index()
 
 
-# ── Charts ─────────────────────────────────────────────────────────────────────
+# Charts 
 def plot_store_actual_vs_pred(store_metrics):
     stores = store_metrics.sort_values('total_actual', ascending=False)
     colors = [STORE_COLORS.get(s, '#475569') for s in stores['store_id']]
@@ -404,7 +345,7 @@ def plot_radar(store_metrics):
     return fig
 
 
-# ── Sidebar ────────────────────────────────────────────────────────────────────
+# Sidebar 
 try:
     df_forecast, df_eval, calendar, df_features = load_base_data()
     store_metrics, df_merge, df_actual = build_store_metrics(df_forecast, df_eval, calendar)
@@ -463,7 +404,7 @@ try:
         </div>
         """, unsafe_allow_html=True)
 
-    # ── Filter data ────────────────────────────────────────────────────────────
+    # Filter data 
     if not selected_stores:
         st.warning("Please select at least one store.")
         st.stop()
@@ -473,7 +414,7 @@ try:
     cat_filt     = cat_df[cat_df['store_id'].isin(selected_stores)]
     hist_filt    = hist_df[hist_df['store_id'].isin(selected_stores)]
 
-    # ── Header ─────────────────────────────────────────────────────────────────
+    # Header 
     states_shown = ', '.join(sm_filtered['state'].unique())
     st.markdown(f"""
     <div class='badge'>● {len(selected_stores)} STORES SELECTED</div>
@@ -485,7 +426,7 @@ try:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── KPI Summary ─────────────────────────────────────────────────────────────
+    # KPI Summary 
     total_actual    = int(sm_filtered['total_actual'].sum())
     total_predicted = int(sm_filtered['total_predicted'].sum())
     avg_mape        = sm_filtered['MAPE'].mean()
@@ -541,7 +482,7 @@ try:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Store Rankings ──────────────────────────────────────────────────────────
+    # Store Rankings 
     st.markdown("""
     <div class='section-header'>
         <div class='section-dot'></div>
@@ -573,7 +514,7 @@ try:
     with col_bar:
         st.plotly_chart(plot_store_actual_vs_pred(sm_filtered), use_container_width=True)
 
-    # ── Trend over 28 days ──────────────────────────────────────────────────────
+    # Trend over 28 days 
     st.markdown("""
     <div class='section-header'>
         <div class='section-dot'></div>
@@ -587,7 +528,7 @@ try:
     with col_state:
         st.plotly_chart(plot_state_donut(sm_filtered), use_container_width=True)
 
-    # ── Accuracy Analysis ───────────────────────────────────────────────────────
+    # Accuracy Analysis 
     st.markdown("""
     <div class='section-header'>
         <div class='section-dot'></div>
@@ -601,7 +542,7 @@ try:
     with col_bias:
         st.plotly_chart(plot_bias_by_store(sm_filtered), use_container_width=True)
 
-    # ── Heatmap + Radar ─────────────────────────────────────────────────────────
+    # Heatmap + Radar 
     st.markdown("""
     <div class='section-header'>
         <div class='section-dot'></div>
@@ -615,7 +556,7 @@ try:
     with col_radar:
         st.plotly_chart(plot_radar(sm_filtered), use_container_width=True)
 
-    # ── Historical Trend ─────────────────────────────────────────────────────────
+    #  Historical Trend 
     st.markdown("""
     <div class='section-header'>
         <div class='section-dot'></div>
@@ -625,7 +566,7 @@ try:
 
     st.plotly_chart(plot_historical_by_store(hist_filt, selected_stores), use_container_width=True)
 
-    # ── Summary Table ────────────────────────────────────────────────────────────
+    # Summary Table 
     st.markdown("""
     <div class='section-header'>
         <div class='section-dot'></div>
