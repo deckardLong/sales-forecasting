@@ -144,21 +144,15 @@ sales-forecasting/
 │       └── forecast_results.parquet  # 28-day predictions for all items
 │
 ├── src/
-│   ├── data/
-│   │   ├── ingestion.py              # melt, load raw data
-│   │   ├── preprocessing.py          # cleaning pipeline
-│   │   └── merger.py                 # merge 3 files
-│   ├── features/
-│   │   └── prophet_features.py       # feature engineering for Prophet
-│   ├── models/
-│   │   └── prophet_model.py          # train + forecast + resume
-│   ├── evaluation/
-│   │   └── metrics.py                # MAE, RMSE, MAPE, SMAPE
-│   └── normalization.py              # MinMax scaler, categorical encoding
-│
+│   ├── preprocessing.py          # cleaning pipeline
+│   ├── normalization.py          # normalize features
+│   ├── prophet_features.py       # select and combine features
+│   ├── prophet_model.py          # training and save models
+│   └── prophet_visualization.py  # visualize data after training  
+|
 ├── notebooks/
 │   ├── 01_eda.ipynb                  # Exploratory Data Analysis
-    ├── 02_data_cleaning.ipynb        # Data cleaning            
+│   ├── 02_data_cleaning.ipynb        # Data cleaning            
 │   ├── 03_feature_engineering.ipynb  # Feature engineering verification
 │   ├── 04_model_training.ipynb       # Training & resume
 │   └── 05_evaluation.ipynb           # Metrics & visualization
