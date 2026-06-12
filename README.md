@@ -144,11 +144,11 @@ sales-forecasting/
 │       └── forecast_results.parquet  # 28-day predictions for all items
 │
 ├── src/
-│   ├── preprocessing.py          # cleaning pipeline
-│   ├── normalization.py          # normalize features
-│   ├── prophet_features.py       # select and combine features
-│   ├── prophet_model.py          # training and save models
-│   └── prophet_visualization.py  # visualize data after training  
+│   ├── preprocessing.py              # cleaning pipeline
+│   ├── normalization.py              # normalize features
+│   ├── prophet_features.py           # select and combine features
+│   ├── prophet_model.py              # training and save models
+│   └── prophet_visualization.py      # visualize data after training  
 |
 ├── notebooks/
 │   ├── 01_eda.ipynb                  # Exploratory Data Analysis
