@@ -1,7 +1,3 @@
-import os
-import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -10,7 +6,8 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 from sklearn.metrics import mean_absolute_error
 from components.metrics import compute_actuals, compute_compare, compute_item_metrics
-from components.charts import PLOTLY_LAYOUT
+from components.charts import PLOTLY_LAYOUT, plot_actual_vs_predicted, plot_historical_trend, plot_store_comparison, plot_category_breakdown, plot_error_distribution
+from components.data_loader import load_all
 
 # Page config
 st.set_page_config(
@@ -152,156 +149,6 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
-
-# Data Loading
-@st.cache_data
-def load_data():
- 
-    df_forecast = pd.read_parquet('models/forecast/forecast_results.parquet')
-    df_eval     = pd.read_csv('data/raw/sales_train_evaluation.csv')
-    calendar    = pd.read_csv('data/raw/calendar.csv')
-    df_features = pd.read_parquet('data/features/m5_features.parquet')
- 
-    df_forecast['ds'] = pd.to_datetime(df_forecast['ds'])
-    df_forecast['yhat'] = df_forecast['yhat'].clip(lower=0)
- 
-    calendar['date'] = pd.to_datetime(calendar['date'])
-    return df_forecast, df_eval, calendar, df_features
- 
-def plot_actual_vs_predicted(df_compare):
-    fig = go.Figure()
- 
-    fig.add_trace(go.Scatter(
-        x=df_compare['date'], y=df_compare['actual'],
-        name='Actual', mode='lines+markers',
-        line=dict(color='#60a5fa', width=2),
-        marker=dict(size=5, color='#60a5fa'),
-        hovertemplate='<b>Actual</b><br>%{x|%b %d}<br>%{y:,.0f}<extra></extra>'
-    ))
- 
-    fig.add_trace(go.Scatter(
-        x=df_compare['date'], y=df_compare['yhat'],
-        name='Predicted', mode='lines+markers',
-        line=dict(color='#f472b6', width=2, dash='dot'),
-        marker=dict(size=5, color='#f472b6'),
-        hovertemplate='<b>Predicted</b><br>%{x|%b %d}<br>%{y:,.0f}<extra></extra>'
-    ))
- 
-    fig.update_layout(
-        **PLOTLY_LAYOUT,
-        title=dict(text='Total Daily Sales — Actual vs Predicted (28 Days)', font=dict(size=14, color='#e2e8f0')),
-        xaxis_title='Date',
-        yaxis_title='Units Sold',
-        hovermode='x unified',
-        height=360
-    )
-    return fig
- 
- 
-def plot_historical_trend(df_features):
-    df_daily = df_features.groupby('date')['sales'].sum().reset_index()
-    df_daily['ma_7']  = df_daily['sales'].rolling(7).mean()
-    df_daily['ma_30'] = df_daily['sales'].rolling(30).mean()
- 
-    fig = go.Figure()
- 
-    fig.add_trace(go.Scatter(
-        x=df_daily['date'], y=df_daily['sales'],
-        name='Daily Sales', mode='lines',
-        line=dict(color='#3b82f6', width=1),
-        opacity=0.4,
-        hovertemplate='%{x|%b %d, %Y}<br>%{y:,.0f}<extra></extra>'
-    ))
- 
-    fig.add_trace(go.Scatter(
-        x=df_daily['date'], y=df_daily['ma_7'],
-        name='7-day MA', mode='lines',
-        line=dict(color='#60a5fa', width=2),
-        hovertemplate='7-day MA<br>%{y:,.0f}<extra></extra>'
-    ))
- 
-    fig.add_trace(go.Scatter(
-        x=df_daily['date'], y=df_daily['ma_30'],
-        name='30-day MA', mode='lines',
-        line=dict(color='#f472b6', width=2),
-        hovertemplate='30-day MA<br>%{y:,.0f}<extra></extra>'
-    ))
- 
-    fig.update_layout(
-        **PLOTLY_LAYOUT,
-        title=dict(text='Historical Sales Trend (Full Dataset)', font=dict(size=14, color='#e2e8f0')),
-        xaxis_title='Date',
-        yaxis_title='Units Sold',
-        height=320
-    )
-    return fig
- 
- 
-def plot_store_comparison(df_actual):
-    df_store = df_actual.groupby('store_id')['actual'].sum().reset_index()\
-                        .sort_values('actual', ascending=True)
- 
-    colors = ['#3b82f6', '#8b5cf6', '#06b6d4', '#f472b6',
-              '#34d399', '#fbbf24', '#f87171', '#a78bfa',
-              '#38bdf8', '#4ade80']
- 
-    fig = go.Figure(go.Bar(
-        x=df_store['actual'],
-        y=df_store['store_id'],
-        orientation='h',
-        marker=dict(color=colors[:len(df_store)], opacity=0.85),
-        hovertemplate='<b>%{y}</b><br>%{x:,.0f} units<extra></extra>'
-    ))
- 
-    fig.update_layout(
-        **PLOTLY_LAYOUT,
-        title=dict(text='Total Actual Sales by Store (28 Days)', font=dict(size=14, color='#e2e8f0')),
-        xaxis_title='Units Sold',
-        height=320
-    )
-    return fig
- 
- 
-def plot_category_breakdown(df_actual, df_eval):
-    df_cat = df_eval[['item_id', 'cat_id']].drop_duplicates()
-    df_merged = df_actual.merge(df_cat, on='item_id', how='left')
-    df_cat_sum = df_merged.groupby('cat_id')['actual'].sum().reset_index()
- 
-    fig = go.Figure(go.Pie(
-        labels=df_cat_sum['cat_id'],
-        values=df_cat_sum['actual'],
-        hole=0.6,
-        marker=dict(colors=['#3b82f6', '#8b5cf6', '#f472b6']),
-        textinfo='label+percent',
-        textfont=dict(color='#e2e8f0', size=12),
-        hovertemplate='<b>%{label}</b><br>%{value:,.0f} units<br>%{percent}<extra></extra>'
-    ))
- 
-    fig.update_layout(
-        **PLOTLY_LAYOUT,
-        title=dict(text='Sales by Category', font=dict(size=14, color='#e2e8f0')),
-        showlegend=False,
-        height=320
-    )
-    return fig
- 
- 
-def plot_error_distribution(item_metrics):
-    fig = go.Figure(go.Histogram(
-        x=item_metrics['MAPE'].clip(upper=50),
-        nbinsx=40,
-        marker=dict(color='#3b82f6', opacity=0.8, line=dict(color='#1e2535', width=0.5)),
-        hovertemplate='MAPE: %{x:.1f}%<br>Count: %{y}<extra></extra>'
-    ))
- 
-    fig.update_layout(
-        **PLOTLY_LAYOUT,
-        title=dict(text='MAPE Distribution Across All Items', font=dict(size=14, color='#e2e8f0')),
-        xaxis_title='MAPE (%)',
-        yaxis_title='Number of Items',
-        height=280
-    )
-    return fig
  
 # Side Bar
 with st.sidebar:
@@ -364,7 +211,7 @@ with st.sidebar:
  
  # Main Content
 try:
-    df_forecast, df_eval, calendar, df_features = load_data()
+    df_forecast, df_eval, calendar, df_features = load_all()
     df_actual    = compute_actuals(df_eval, calendar)
     df_compare   = compute_compare(df_forecast, df_actual)
     item_metrics = compute_item_metrics(df_forecast, df_actual)

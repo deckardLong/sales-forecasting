@@ -4,9 +4,9 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from sklearn.metrics import mean_absolute_error
-import os
 from components.metrics import get_item_actual, get_item_history
-from components.charts import PLOTLY_LAYOUT, plot_item_forecast
+from components.charts import PLOTLY_LAYOUT, plot_item_forecast, plot_components, plot_price_vs_sales, plot_residuals, generate_insights
+from components.data_loader import load_all
 
 # Page config 
 st.set_page_config(
@@ -22,7 +22,7 @@ st.markdown("""
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
     html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-    #MainMenu, footer, header   { visibility: hidden; }
+    #MainMenu, footer { visibility: hidden; }
 
     .stApp { background-color: #0f1117; color: #e2e8f0; }
 
@@ -101,184 +101,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Data loading 
-@st.cache_data
-def load_base_data():
-    df_forecast = pd.read_parquet('models/forecast/forecast_results.parquet')
-    df_eval     = pd.read_csv('data/raw/sales_train_evaluation.csv')
-    calendar    = pd.read_csv('data/raw/calendar.csv')
-    df_features = pd.read_parquet('data/features/m5_features.parquet')
-
-    df_forecast['ds'] = pd.to_datetime(df_forecast['ds'])
-    df_forecast['yhat'] = df_forecast['yhat'].clip(lower=0)
-    calendar['date'] = pd.to_datetime(calendar['date'])
-    return df_forecast, df_eval, calendar, df_features
-
-def plot_components(df_history):
-    """Trend + Weekly + Monthly seasonality."""
-    df = df_history.copy()
-    df['date'] = pd.to_datetime(df['date'])
-    df['dow']   = df['date'].dt.dayofweek
-    df['month'] = df['date'].dt.month
-
-    # Trend — rolling 30 ngày
-    df['trend'] = df['sales'].rolling(30, center=True).mean()
-
-    # Weekly pattern
-    weekly = df.groupby('dow')['sales'].mean()
-    dow_labels = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun']
-
-    # Monthly pattern
-    monthly = df.groupby('month')['sales'].mean()
-    month_labels = ['Jan','Feb','Mar','Apr','May','Jun',
-                    'Jul','Aug','Sep','Oct','Nov','Dec']
-
-    fig = make_subplots(
-        rows=1, cols=3,
-        subplot_titles=['Long-term Trend', 'Day of Week Pattern', 'Monthly Pattern'],
-        horizontal_spacing=0.08
-    )
-
-    # Trend
-    fig.add_trace(go.Scatter(
-        x=df['date'], y=df['trend'],
-        mode='lines', line=dict(color='#8b5cf6', width=2),
-        showlegend=False,
-        hovertemplate='%{x|%b %Y}<br>%{y:,.1f}<extra></extra>'
-    ), row=1, col=1)
-
-    # Weekly
-    fig.add_trace(go.Bar(
-        x=dow_labels, y=weekly.values,
-        marker=dict(
-            color=weekly.values,
-            colorscale=[[0,'#1e2535'],[1,'#8b5cf6']],
-            showscale=False
-        ),
-        showlegend=False,
-        hovertemplate='%{x}<br>Avg: %{y:,.1f}<extra></extra>'
-    ), row=1, col=2)
-
-    # Monthly
-    fig.add_trace(go.Bar(
-        x=month_labels, y=monthly.values,
-        marker=dict(
-            color=monthly.values,
-            colorscale=[[0,'#1e2535'],[1,'#06b6d4']],
-            showscale=False
-        ),
-        showlegend=False,
-        hovertemplate='%{x}<br>Avg: %{y:,.1f}<extra></extra>'
-    ), row=1, col=3)
-
-    fig.update_layout(
-        **PLOTLY_LAYOUT,
-        height=280,
-        title=dict(text='Seasonality Components', font=dict(size=14, color='#e2e8f0'))
-    )
-    fig.update_annotations(font=dict(color='#64748b', size=11))
-
-    for i in range(1, 4):
-        fig.update_xaxes(gridcolor='#1e2535', linecolor='#1e2535', row=1, col=i)
-        fig.update_yaxes(gridcolor='#1e2535', linecolor='#1e2535', row=1, col=i)
-
-    return fig
-
-
-def plot_price_vs_sales(df_history):
-    """Scatter: sell_price vs sales."""
-    df = df_history[df_history['sell_price'] > 0].copy()
-
-    fig = go.Figure(go.Scatter(
-        x=df['sell_price'], y=df['sales'],
-        mode='markers',
-        marker=dict(
-            color=df['sales'],
-            colorscale=[[0,'#1e2535'],[0.5,'#8b5cf6'],[1,'#f472b6']],
-            size=4, opacity=0.6,
-            showscale=False
-        ),
-        hovertemplate='Price: $%{x:.2f}<br>Sales: %{y:,.0f}<extra></extra>'
-    ))
-
-    fig.update_layout(
-        **PLOTLY_LAYOUT,
-        title=dict(text='Price vs Sales Correlation', font=dict(size=14, color='#e2e8f0')),
-        xaxis_title='Sell Price ($)',
-        yaxis_title='Units Sold',
-        height=280
-    )
-    return fig
-
-
-def plot_residuals(df_compare_item):
-    """Residual plot: actual - predicted theo ngày."""
-    df_compare_item['residual'] = df_compare_item['actual'] - df_compare_item['yhat']
-    colors = ['#34d399' if r >= 0 else '#f87171' for r in df_compare_item['residual']]
-
-    fig = go.Figure(go.Bar(
-        x=df_compare_item['date'],
-        y=df_compare_item['residual'],
-        marker_color=colors,
-        hovertemplate='%{x|%b %d}<br>Residual: %{y:+.1f}<extra></extra>'
-    ))
-
-    fig.add_hline(y=0, line_color='#475569', line_width=1)
-
-    fig.update_layout(
-        **PLOTLY_LAYOUT,
-        title=dict(text='Forecast Residuals (Actual − Predicted)', font=dict(size=14, color='#e2e8f0')),
-        xaxis_title='Date',
-        yaxis_title='Residual',
-        height=240
-    )
-    return fig
-
-
-# ── Insights generator ─────────────────────────────────────────────────────────
-def generate_insights(df_history, df_compare_item, metrics):
-    insights = []
-
-    # Trend insight
-    first_half = df_history['sales'].iloc[:len(df_history)//2].mean()
-    second_half = df_history['sales'].iloc[len(df_history)//2:].mean()
-    pct_change  = (second_half - first_half) / (first_half + 1) * 100
-    if pct_change > 5:
-        insights.append(("📈 Upward Trend", f"Sales grew {pct_change:.1f}% in the second half of the history period."))
-    elif pct_change < -5:
-        insights.append(("📉 Downward Trend", f"Sales declined {abs(pct_change):.1f}% in the second half of the history period."))
-    else:
-        insights.append(("➡️ Stable Trend", f"Sales remained relatively stable ({pct_change:+.1f}% change over time)."))
-
-    # Weekend insight
-    df_history['dow'] = pd.to_datetime(df_history['date']).dt.dayofweek
-    weekend_avg = df_history[df_history['dow'] >= 5]['sales'].mean()
-    weekday_avg = df_history[df_history['dow'] < 5]['sales'].mean()
-    if weekend_avg > weekday_avg * 1.1:
-        insights.append(("📅 Weekend Peak", f"Weekend sales are {((weekend_avg/weekday_avg)-1)*100:.0f}% higher than weekdays."))
-    elif weekday_avg > weekend_avg * 1.1:
-        insights.append(("📅 Weekday Peak", f"Weekday sales are {((weekday_avg/weekend_avg)-1)*100:.0f}% higher than weekends."))
-
-    # Accuracy insight
-    mape = metrics['mape']
-    if mape < 10:
-        insights.append(("✅ High Accuracy", f"Model MAPE of {mape:.1f}% indicates excellent forecast accuracy."))
-    elif mape < 20:
-        insights.append(("⚠️ Moderate Accuracy", f"Model MAPE of {mape:.1f}% — forecast is usable but has room to improve."))
-    else:
-        insights.append(("❌ Low Accuracy", f"Model MAPE of {mape:.1f}% is high. Consider more data or model tuning."))
-
-    # Zero sales insight
-    zero_pct = (df_history['sales'] == 0).mean() * 100
-    if zero_pct > 30:
-        insights.append(("⚠️ Sparse Sales", f"{zero_pct:.0f}% of days had zero sales — intermittent demand pattern."))
-
-    return insights
-
-
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 try:
-    df_forecast, df_eval, calendar, df_features = load_base_data()
+    df_forecast, df_eval, calendar, df_features = load_all()
 
     with st.sidebar:
         st.markdown("""
@@ -428,7 +253,7 @@ try:
 
     st.plotly_chart(
         plot_item_forecast(df_history, df_actual_item, df_pred_item, selected_item, selected_store, calendar),
-        use_container_width=True
+        width='stretch'
     )
 
     # ── Components + Price ──────────────────────────────────────────────────────
@@ -441,9 +266,9 @@ try:
 
     col_comp, col_price = st.columns([3, 2])
     with col_comp:
-        st.plotly_chart(plot_components(df_history), use_container_width=True)
+        st.plotly_chart(plot_components(df_history), width='stretch')
     with col_price:
-        st.plotly_chart(plot_price_vs_sales(df_history), use_container_width=True)
+        st.plotly_chart(plot_price_vs_sales(df_history), width='stretch')
 
     # ── Residuals + Insights ────────────────────────────────────────────────────
     st.markdown("""
@@ -457,7 +282,7 @@ try:
 
     with col_resid:
         if not df_compare_item.empty:
-            st.plotly_chart(plot_residuals(df_compare_item.copy()), use_container_width=True)
+            st.plotly_chart(plot_residuals(df_compare_item.copy()), width='stretch')
 
     with col_insight:
         insights = generate_insights(df_history, df_compare_item, metrics)
@@ -508,7 +333,7 @@ try:
                     'Abs Error'  : '{:.1f}',
                     'Daily MAPE %': '{:.1f}%'
                 }),
-            use_container_width=True,
+            width='stretch',
             height=400
         )
 

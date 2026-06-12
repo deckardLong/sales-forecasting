@@ -5,9 +5,10 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 from sklearn.metrics import mean_absolute_error
-import os
-from components.metrics import build_store_metrics, build_daily_by_store
-from components.charts import PLOTLY_LAYOUT, STORE_COLORS, STATE_COLORS
+from components.metrics import build_store_metrics, build_daily_by_store, build_cat_by_store, build_history_by_store
+from components.charts import PLOTLY_LAYOUT, STORE_COLORS, STATE_COLORS, plot_store_actual_vs_pred, plot_daily_trend_by_store, \
+                            plot_mape_by_store, plot_state_donut, plot_category_heatmap, plot_bias_by_store, plot_historical_by_store, plot_radar
+from components.data_loader import load_all
 
 # Page config
 st.set_page_config(
@@ -23,7 +24,7 @@ st.markdown("""
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
     html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-    #MainMenu, footer, header   { visibility: hidden; }
+    #MainMenu, footer { visibility: hidden; }
 
     .stApp { background-color: #0f1117; color: #e2e8f0; }
 
@@ -112,242 +113,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Data loading 
-@st.cache_data
-def load_base_data():
-    df_forecast = pd.read_parquet('models/forecast/forecast_results.parquet')
-    df_eval     = pd.read_csv("data/raw/sales_train_evaluation.csv")
-    calendar    = pd.read_csv("data/raw/calendar.csv")
-    df_features = pd.read_parquet("data/features/m5_features.parquet")
-
-    df_forecast['ds'] = pd.to_datetime(df_forecast['ds'])
-    df_forecast['yhat'] = df_forecast['yhat'].clip(lower=0)
-    calendar['date'] = pd.to_datetime(calendar['date'])
-    return df_forecast, df_eval, calendar, df_features
-
-@st.cache_data
-def build_cat_by_store(df_merge, df_eval):
-    cat_map = df_eval[['item_id', 'cat_id']].drop_duplicates()
-    df = df_merge.merge(cat_map, on='item_id', how='left')
-    return df.groupby(['store_id', 'cat_id']).agg(
-        actual=('actual', 'sum'),
-        predicted=('yhat', 'sum')
-    ).reset_index()
-
-
-@st.cache_data
-def build_history_by_store(df_features):
-    return df_features.groupby(['store_id', 'date'])['sales'].sum().reset_index()
-
-
-# Charts 
-def plot_store_actual_vs_pred(store_metrics):
-    stores = store_metrics.sort_values('total_actual', ascending=False)
-    colors = [STORE_COLORS.get(s, '#475569') for s in stores['store_id']]
-
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        name='Actual', x=stores['store_id'], y=stores['total_actual'],
-        marker_color=colors, opacity=0.9,
-        hovertemplate='<b>%{x}</b><br>Actual: %{y:,.0f}<extra></extra>'
-    ))
-    fig.add_trace(go.Bar(
-        name='Predicted', x=stores['store_id'], y=stores['total_predicted'],
-        marker_color=colors, opacity=0.45,
-        hovertemplate='<b>%{x}</b><br>Predicted: %{y:,.0f}<extra></extra>'
-    ))
-    fig.update_layout(
-        **PLOTLY_LAYOUT,
-        title=dict(text='Total Sales: Actual vs Predicted by Store', font=dict(size=14, color='#e2e8f0')),
-        barmode='group',
-        xaxis_title='Store', yaxis_title='Units Sold',
-        height=340
-    )
-    return fig
-
-
-def plot_daily_trend_by_store(daily_df, selected_stores):
-    fig = go.Figure()
-    for store in selected_stores:
-        df_s = daily_df[daily_df['store_id'] == store].sort_values('date')
-        color = STORE_COLORS.get(store, '#475569')
-        fig.add_trace(go.Scatter(
-            x=df_s['date'], y=df_s['actual'],
-            name=store, mode='lines',
-            line=dict(color=color, width=1.8),
-            hovertemplate=f'<b>{store}</b><br>%{{x|%b %d}}<br>%{{y:,.0f}}<extra></extra>'
-        ))
-    fig.update_layout(
-        **PLOTLY_LAYOUT,
-        title=dict(text='Daily Actual Sales by Store (28-Day Window)', font=dict(size=14, color='#e2e8f0')),
-        xaxis_title='Date', yaxis_title='Units Sold',
-        hovermode='x unified', height=320
-    )
-    return fig
-
-
-def plot_mape_by_store(store_metrics):
-    df = store_metrics.sort_values('MAPE')
-    colors = ['#34d399' if m < 10 else '#fbbf24' if m < 20 else '#f87171'
-              for m in df['MAPE']]
-
-    fig = go.Figure(go.Bar(
-        x=df['MAPE'], y=df['store_id'],
-        orientation='h',
-        marker_color=colors,
-        text=[f"{m:.1f}%" for m in df['MAPE']],
-        textposition='outside',
-        textfont=dict(color='#94a3b8', size=11),
-        hovertemplate='<b>%{y}</b><br>MAPE: %{x:.1f}%<extra></extra>'
-    ))
-    fig.add_vline(x=10, line_dash='dash', line_color='#34d399',
-                  annotation_text='10%', annotation_font_color='#34d399')
-    fig.add_vline(x=20, line_dash='dash', line_color='#fbbf24',
-                  annotation_text='20%', annotation_font_color='#fbbf24')
-    fig.update_layout(
-        **PLOTLY_LAYOUT,
-        title=dict(text='MAPE by Store', font=dict(size=14, color='#e2e8f0')),
-        xaxis_title='MAPE (%)', height=320
-    )
-    return fig
-
-
-def plot_state_donut(store_metrics):
-    state_df = store_metrics.groupby('state')['total_actual'].sum().reset_index()
-    colors   = [STATE_COLORS.get(s, '#475569') for s in state_df['state']]
-
-    fig = go.Figure(go.Pie(
-        labels=state_df['state'],
-        values=state_df['total_actual'],
-        hole=0.65,
-        marker=dict(colors=colors),
-        textinfo='label+percent',
-        textfont=dict(color='#e2e8f0', size=13),
-        hovertemplate='<b>%{label}</b><br>%{value:,.0f} units<br>%{percent}<extra></extra>'
-    ))
-    fig.add_annotation(
-        text='by State', x=0.5, y=0.5,
-        font=dict(size=12, color='#475569'),
-        showarrow=False
-    )
-    fig.update_layout(
-        **PLOTLY_LAYOUT,
-        title=dict(text='Sales Distribution by State', font=dict(size=14, color='#e2e8f0')),
-        showlegend=False, height=300
-    )
-    return fig
-
-
-def plot_category_heatmap(cat_df):
-    pivot = cat_df.pivot(index='store_id', columns='cat_id', values='actual').fillna(0)
-    stores = sorted(pivot.index)
-    cats   = sorted(pivot.columns)
-
-    fig = go.Figure(go.Heatmap(
-        z=[[pivot.loc[s, c] for c in cats] for s in stores],
-        x=cats, y=stores,
-        colorscale=[[0, '#0f1117'], [0.3, '#1e3a5f'], [0.7, '#1d4ed8'], [1, '#60a5fa']],
-        hovertemplate='Store: %{y}<br>Cat: %{x}<br>Sales: %{z:,.0f}<extra></extra>',
-        text=[[f"{pivot.loc[s,c]:,.0f}" for c in cats] for s in stores],
-        texttemplate='%{text}',
-        textfont=dict(color='#e2e8f0', size=11)
-    ))
-    fig.update_layout(
-        **PLOTLY_LAYOUT,
-        title=dict(text='Sales Heatmap — Store × Category', font=dict(size=14, color='#e2e8f0')),
-        xaxis_title='Category', yaxis_title='Store',
-        height=340
-    )
-    return fig
-
-
-def plot_bias_by_store(store_metrics):
-    df = store_metrics.sort_values('bias')
-    colors = ['#34d399' if b >= 0 else '#f87171' for b in df['bias']]
-
-    fig = go.Figure(go.Bar(
-        x=df['store_id'], y=df['bias'],
-        marker_color=colors,
-        text=[f"{b:+.2f}" for b in df['bias']],
-        textposition='outside',
-        textfont=dict(color='#94a3b8', size=11),
-        hovertemplate='<b>%{x}</b><br>Bias: %{y:+.2f}<extra></extra>'
-    ))
-    fig.add_hline(y=0, line_color='#475569', line_width=1)
-    fig.update_layout(
-        **PLOTLY_LAYOUT,
-        title=dict(text='Forecast Bias by Store (+ = Overforecast)', font=dict(size=14, color='#e2e8f0')),
-        xaxis_title='Store', yaxis_title='Avg Bias (units/day)',
-        height=280
-    )
-    return fig
-
-
-def plot_historical_by_store(hist_df, selected_stores):
-    fig = go.Figure()
-    for store in selected_stores:
-        df_s = hist_df[hist_df['store_id'] == store].sort_values('date')
-        df_s['ma30'] = df_s['sales'].rolling(30).mean()
-        color = STORE_COLORS.get(store, '#475569')
-        fig.add_trace(go.Scatter(
-            x=df_s['date'], y=df_s['ma30'],
-            name=store, mode='lines',
-            line=dict(color=color, width=2),
-            hovertemplate=f'<b>{store}</b><br>%{{x|%b %Y}}<br>MA30: %{{y:,.0f}}<extra></extra>'
-        ))
-    fig.update_layout(
-        **PLOTLY_LAYOUT,
-        title=dict(text='Historical Sales Trend by Store (30-day MA)', font=dict(size=14, color='#e2e8f0')),
-        xaxis_title='Date', yaxis_title='Units Sold (MA30)',
-        hovermode='x unified', height=320
-    )
-    return fig
-
-
-def plot_radar(store_metrics):
-    """Radar chart so sánh các stores theo nhiều metrics."""
-    metrics_cols = ['total_actual', 'MAE', 'RMSE', 'MAPE', 'n_items']
-    labels       = ['Volume', 'MAE ↓', 'RMSE ↓', 'MAPE ↓', 'Items']
-
-    df = store_metrics.copy()
-    # Normalize 0-1 (inverted cho metrics "thấp hơn tốt hơn")
-    for col in ['MAE', 'RMSE', 'MAPE']:
-        df[col] = 1 - (df[col] - df[col].min()) / (df[col].max() - df[col].min() + 1e-9)
-    for col in ['total_actual', 'n_items']:
-        df[col] = (df[col] - df[col].min()) / (df[col].max() - df[col].min() + 1e-9)
-
-    fig = go.Figure()
-    for _, row in df.iterrows():
-        store = row['store_id']
-        vals  = [row[c] for c in metrics_cols]
-        vals += [vals[0]]   # close radar
-        lbls  = labels + [labels[0]]
-        color = STORE_COLORS.get(store, '#475569')
-        fig.add_trace(go.Scatterpolar(
-            r=vals, theta=lbls,
-            fill='toself', name=store,
-            line=dict(color=color, width=1.5),
-            fillcolor=color.replace(')', ',0.08)').replace('rgb', 'rgba'),
-            opacity=0.85,
-            hovertemplate=f'<b>{store}</b><br>%{{theta}}: %{{r:.2f}}<extra></extra>'
-        ))
-
-    fig.update_layout(
-        **PLOTLY_LAYOUT,
-        polar=dict(
-            bgcolor='rgba(0,0,0,0)',
-            radialaxis=dict(visible=True, range=[0, 1], gridcolor='#1e2535', color='#475569'),
-            angularaxis=dict(gridcolor='#1e2535', color='#64748b')
-        ),
-        title=dict(text='Store Performance Radar', font=dict(size=14, color='#e2e8f0')),
-        height=400
-    )
-    return fig
-
-
 # Sidebar 
 try:
-    df_forecast, df_eval, calendar, df_features = load_base_data()
+    df_forecast, df_eval, calendar, df_features = load_all()
     store_metrics, df_merge, df_actual = build_store_metrics(df_forecast, df_eval, calendar)
     daily_df  = build_daily_by_store(df_merge)
     cat_df    = build_cat_by_store(df_merge, df_eval)
@@ -512,7 +280,7 @@ try:
             """, unsafe_allow_html=True)
 
     with col_bar:
-        st.plotly_chart(plot_store_actual_vs_pred(sm_filtered), use_container_width=True)
+        st.plotly_chart(plot_store_actual_vs_pred(sm_filtered), width='stretch')
 
     # Trend over 28 days 
     st.markdown("""
@@ -524,9 +292,9 @@ try:
 
     col_daily, col_state = st.columns([3, 2])
     with col_daily:
-        st.plotly_chart(plot_daily_trend_by_store(daily_filt, selected_stores), use_container_width=True)
+        st.plotly_chart(plot_daily_trend_by_store(daily_filt, selected_stores), width='stretch')
     with col_state:
-        st.plotly_chart(plot_state_donut(sm_filtered), use_container_width=True)
+        st.plotly_chart(plot_state_donut(sm_filtered), width='stretch')
 
     # Accuracy Analysis 
     st.markdown("""
@@ -538,9 +306,9 @@ try:
 
     col_mape, col_bias = st.columns(2)
     with col_mape:
-        st.plotly_chart(plot_mape_by_store(sm_filtered), use_container_width=True)
+        st.plotly_chart(plot_mape_by_store(sm_filtered), width='stretch')
     with col_bias:
-        st.plotly_chart(plot_bias_by_store(sm_filtered), use_container_width=True)
+        st.plotly_chart(plot_bias_by_store(sm_filtered), width='stretch')
 
     # Heatmap + Radar 
     st.markdown("""
@@ -552,9 +320,9 @@ try:
 
     col_heat, col_radar = st.columns([3, 2])
     with col_heat:
-        st.plotly_chart(plot_category_heatmap(cat_filt), use_container_width=True)
+        st.plotly_chart(plot_category_heatmap(cat_filt), width='stretch')
     with col_radar:
-        st.plotly_chart(plot_radar(sm_filtered), use_container_width=True)
+        st.plotly_chart(plot_radar(sm_filtered), width='stretch')
 
     #  Historical Trend 
     st.markdown("""
@@ -564,7 +332,7 @@ try:
     </div>
     """, unsafe_allow_html=True)
 
-    st.plotly_chart(plot_historical_by_store(hist_filt, selected_stores), use_container_width=True)
+    st.plotly_chart(plot_historical_by_store(hist_filt, selected_stores), width='stretch')
 
     # Summary Table 
     st.markdown("""
@@ -596,7 +364,7 @@ try:
                 'MAPE%'    : '{:.1f}%',
                 'Bias'     : '{:+.2f}'
             }),
-        use_container_width=True,
+        width='stretch',
         height=420
     )
 

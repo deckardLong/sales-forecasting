@@ -112,3 +112,17 @@ def build_daily_by_store(df_merge):
     return df_merge.groupby(['store_id', 'date']).agg(
         actual=('actual', 'sum'), predicted=('yhat', 'sum')
     ).reset_index()
+
+@st.cache_data
+def build_cat_by_store(df_merge, df_eval):
+    cat_map = df_eval[['item_id', 'cat_id']].drop_duplicates()
+    df = df_merge.merge(cat_map, on='item_id', how='left')
+    return df.groupby(['store_id', 'cat_id']).agg(
+        actual=('actual', 'sum'),
+        predicted=('yhat', 'sum')
+    ).reset_index()
+
+
+@st.cache_data
+def build_history_by_store(df_features):
+    return df_features.groupby(['store_id', 'date'])['sales'].sum().reset_index()
